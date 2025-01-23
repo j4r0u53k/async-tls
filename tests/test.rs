@@ -4,61 +4,65 @@ use async_std::net::{TcpListener, TcpStream};
 use async_std::prelude::*;
 use async_std::task;
 use async_tls::{TlsAcceptor, TlsConnector};
-use lazy_static::lazy_static;
-use rustls::{Certificate, ClientConfig, PrivateKey, RootCertStore, ServerConfig};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use std::io::{BufReader, Cursor};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::LazyLock;
 
 const CERT: &str = include_str!("end.cert");
 const CHAIN: &str = include_str!("end.chain");
 const RSA: &str = include_str!("end.rsa");
 
-lazy_static! {
-    static ref TEST_SERVER: (SocketAddr, &'static str, Vec<Vec<u8>>) = {
-        let cert = certs(&mut BufReader::new(Cursor::new(CERT))).unwrap();
-        let cert = cert.into_iter().map(Certificate).collect();
-        let chain = certs(&mut BufReader::new(Cursor::new(CHAIN))).unwrap();
-        let mut keys = pkcs8_private_keys(&mut BufReader::new(Cursor::new(RSA))).unwrap();
-        let key = PrivateKey(keys.pop().unwrap());
-        let sconfig = ServerConfig::builder()
-            .with_safe_defaults()
-            .with_no_client_auth()
-            .with_single_cert(cert, key)
-            .unwrap();
-        let acceptor = TlsAcceptor::from(Arc::new(sconfig));
+static TEST_SERVER: LazyLock<(SocketAddr, &'static str, Vec<CertificateDer<'_>>)> = LazyLock::new(|| {
+    let cert = certs(&mut BufReader::new(Cursor::new(CERT)))
+        .collect::<Result<Vec<_>,_>>()
+        .unwrap();
+    let chain = certs(&mut BufReader::new(Cursor::new(CHAIN)))
+        .collect::<Result<Vec<_>,_>>()
+        .unwrap();
+    let mut keys = pkcs8_private_keys(&mut BufReader::new(Cursor::new(RSA)))
+        .map(|res| res.map(PrivateKeyDer::Pkcs8))
+        .collect::<Result<Vec<_>,_>>()
+        .unwrap();
+    let key = keys.pop().unwrap();
+    let sconfig = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(cert, key)
+        .unwrap();
+    let acceptor = TlsAcceptor::from(Arc::new(sconfig));
 
-        let (send, recv) = bounded(1);
+    let (send, recv) = bounded(1);
 
-        task::spawn(async move {
-            let addr = SocketAddr::from(([127, 0, 0, 1], 0));
-            let listener = TcpListener::bind(&addr).await?;
+    task::spawn(async move {
+        let addr = SocketAddr::from(([127, 0, 0, 1], 0));
+        let listener = TcpListener::bind(&addr).await?;
 
-            send.send(listener.local_addr()?).await.unwrap();
+        send.send(listener.local_addr()?).await.unwrap();
 
-            let mut incoming = listener.incoming();
-            while let Some(stream) = incoming.next().await {
-                let acceptor = acceptor.clone();
-                task::spawn(async move {
-                    use futures_util::io::AsyncReadExt;
-                    let stream = acceptor.accept(stream?).await?;
-                    let (mut reader, mut writer) = stream.split();
-                    io::copy(&mut reader, &mut writer).await?;
-                    Ok(()) as io::Result<()>
-                });
-            }
+        let mut incoming = listener.incoming();
+        while let Some(stream) = incoming.next().await {
+            let acceptor = acceptor.clone();
+            task::spawn(async move {
+                use futures_util::io::AsyncReadExt;
+                let stream = acceptor.accept(stream?).await?;
+                let (mut reader, mut writer) = stream.split();
+                io::copy(&mut reader, &mut writer).await?;
+                Ok(()) as io::Result<()>
+            });
+        }
 
-            Ok(()) as io::Result<()>
-        });
+        Ok(()) as io::Result<()>
+    });
 
-        let addr = task::block_on(async move { recv.recv().await.unwrap() });
-        (addr, "localhost", chain)
-    };
-}
+    let addr = task::block_on(async { recv.recv().await.unwrap() });
+    (addr, "localhost", chain)
+});
 
-fn start_server() -> &'static (SocketAddr, &'static str, Vec<Vec<u8>>) {
-    &*TEST_SERVER
+fn start_server() -> &'static (SocketAddr, &'static str, Vec<CertificateDer<'static>>) {
+    &TEST_SERVER
 }
 
 async fn start_client(addr: SocketAddr, domain: &str, config: Arc<ClientConfig>) -> io::Result<()> {
@@ -82,10 +86,9 @@ async fn start_client(addr: SocketAddr, domain: &str, config: Arc<ClientConfig>)
 fn pass() {
     let (addr, domain, chain) = start_server();
     let mut root_store = RootCertStore::empty();
-    let (added, ignored) = root_store.add_parsable_certificates(&chain);
+    let (added, ignored) = root_store.add_parsable_certificates(chain.clone());
     assert!(added >= 1 && ignored == 0);
     let config = ClientConfig::builder()
-        .with_safe_defaults()
         .with_root_certificates(root_store)
         .with_no_client_auth();
     task::block_on(start_client(*addr, domain, Arc::new(config))).unwrap();
@@ -95,10 +98,9 @@ fn pass() {
 fn fail() {
     let (addr, domain, chain) = start_server();
     let mut root_store = RootCertStore::empty();
-    let (added, ignored) = root_store.add_parsable_certificates(&chain);
+    let (added, ignored) = root_store.add_parsable_certificates(chain.clone());
     assert!(added >= 1 && ignored == 0);
     let config = ClientConfig::builder()
-        .with_safe_defaults()
         .with_root_certificates(root_store)
         .with_no_client_auth();
     let config = Arc::new(config);

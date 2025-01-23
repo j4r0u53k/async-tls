@@ -153,7 +153,7 @@ impl<'a, IO: AsyncRead + AsyncWrite + Unpin> Stream<'a, IO> {
             cx: &'a mut Context<'b>,
         }
 
-        impl<'a, 'b, T: AsyncRead + Unpin> Read for Reader<'a, 'b, T> {
+        impl<T: AsyncRead + Unpin> Read for Reader<'_, '_, T> {
             fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
                 match Pin::new(&mut self.io).poll_read(self.cx, buf) {
                     Poll::Ready(result) => result,
@@ -253,7 +253,7 @@ impl<'a, IO: AsyncRead + AsyncWrite + Unpin> Stream<'a, IO> {
     }
 }
 
-impl<'a, IO: AsyncRead + AsyncWrite + Unpin> WriteTls<IO> for Stream<'a, IO> {
+impl<IO: AsyncRead + AsyncWrite + Unpin> WriteTls<IO> for Stream<'_, IO> {
     fn write_tls(&mut self, cx: &mut Context) -> io::Result<usize> {
         // TODO writev
 
@@ -262,7 +262,7 @@ impl<'a, IO: AsyncRead + AsyncWrite + Unpin> WriteTls<IO> for Stream<'a, IO> {
             cx: &'a mut Context<'b>,
         }
 
-        impl<'a, 'b, T: AsyncWrite + Unpin> Write for Writer<'a, 'b, T> {
+        impl<T: AsyncWrite + Unpin> Write for Writer<'_, '_, T> {
             fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
                 match Pin::new(&mut self.io).poll_write(self.cx, buf) {
                     Poll::Ready(result) => result,
@@ -283,7 +283,7 @@ impl<'a, IO: AsyncRead + AsyncWrite + Unpin> WriteTls<IO> for Stream<'a, IO> {
     }
 }
 
-impl<'a, IO: AsyncRead + AsyncWrite + Unpin> AsyncRead for Stream<'a, IO> {
+impl<IO: AsyncRead + AsyncWrite + Unpin> AsyncRead for Stream<'_, IO> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context,
@@ -312,7 +312,7 @@ impl<'a, IO: AsyncRead + AsyncWrite + Unpin> AsyncRead for Stream<'a, IO> {
     }
 }
 
-impl<'a, IO: AsyncRead + AsyncWrite + Unpin> AsyncWrite for Stream<'a, IO> {
+impl<IO: AsyncRead + AsyncWrite + Unpin> AsyncWrite for Stream<'_, IO> {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context, buf: &[u8]) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
 
